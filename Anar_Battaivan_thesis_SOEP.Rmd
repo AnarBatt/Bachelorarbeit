@@ -1,0 +1,414 @@
+---
+title: "Synthetic Data Generation in the German Socio-Economic Panel"
+author: "Anar Battaivan"
+date: '17th of May 2023'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(labelled)
+library(synthpop)
+library(mice)
+library(miceadds)
+library(sdcMicro)
+library(tictoc)
+```
+
+```{r read data into r}
+# Get accesss for the German Socio-Economic Panel (SOEP-CORE) first, then read the pgen, hgen and pequiv data set
+pgen <- readRDS("~/Desktop/Bachelorarbeit/R_DE/pgen.rds")
+hgen <- readRDS("~/Desktop/Bachelorarbeit/R_DE/hgen.rds")
+pequiv <- readRDS("~/Desktop/Bachelorarbeit/R_DE/pequiv.rds")
+```
+
+```{r SOEP reduce data to first wave due to its size}
+pgen <- pgen %>% dplyr::filter(syear == 1984)
+hgen <- hgen %>% dplyr::filter(syear == 1984)
+pequiv <- pequiv %>% dplyr::filter(syear == 1984)
+```
+
+```{r unlabel data and convert missing values into NA}
+pgen <- remove_val_labels(pgen)
+pgen[pgen < 0] <- NA
+
+hgen <- remove_val_labels(hgen)
+# missing conventions into NA as stated here: https://paneldata.org/soep-core/
+hgen[hgen < 0] <- NA
+
+pequiv <- remove_val_labels(pequiv)
+# missing conventions into NA as stated here: https://paneldata.org/soep-core/
+pequiv[pequiv < 0] <- NA
+
+##########
+# Remove variables, that contain only NA values (although this is probably only the case because of excluding other waves)
+
+# for finding out, which variables are removed in pgen, hgen, health and pequiv respectively:
+names(which(!(colSums(is.na(pgen)) != nrow(pgen))))
+names(which(!(colSums(is.na(hgen)) != nrow(hgen))))
+names(which(!(colSums(is.na(pequiv)) != nrow(pequiv))))
+
+# for removing them
+pgen <- pgen[, colSums(is.na(pgen)) != nrow(pgen)]
+hgen <- hgen[, colSums(is.na(hgen)) != nrow(hgen)]
+pequiv <- pequiv[, colSums(is.na(pequiv)) != nrow(pequiv)]
+```
+
+``` {r data synthesis}
+tic()
+synth_pgen <- syn(pgen, seed = 123, minnumlevels = 10)
+synth_hgen <- syn(hgen, seed = 123, minnumlevels = 10)
+synth_pequiv <- syn(pequiv, seed = 123, minnumlevels = 10)
+toc()
+```
+
+```{r data preperation}
+# original data
+data_full <- pgen %>% 
+  inner_join(pequiv, by = "pid", suffix=c("",".y")) %>%
+  select(-ends_with(".y")) %>%
+  inner_join(hgen, by = "hid", suffix=c("",".y")) %>%
+  select(-ends_with(".y")) 
+
+# synthetic data, if first synthesized and then merged
+synth_data <- synth_pgen$syn %>%
+  inner_join(synth_pequiv$syn, by = "pid", suffix=c("",".y")) %>%
+  select(-ends_with(".y")) %>%
+  inner_join(synth_hgen$syn, by = "hid", suffix=c("",".y")) %>%
+  select(-ends_with(".y"))
+
+# synthetic data, if first merged then synthesized
+tic()
+synth_data_full <- syn(data_full, seed = 123, minnumlevels = 10)
+toc()
+```
+
+```{r Global Utilities}
+tic()
+Util_pgen <- utility.gen(synth_pgen, pgen)
+Util_hgen <- utility.gen(synth_hgen, hgen)
+Util_pequiv <- utility.gen(synth_pequiv, pequiv)
+Util_data_full <- utility.gen(synth_data_full, data_full)
+
+print(Util_pgen, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+print(Util_hgen, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+print(Util_pequiv, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+print(Util_data_full, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+toc()
+
+# Global Utility specific for variables for life satisfaction analysis
+tic()
+test1 <- synth_data_full$syn %>% select(c("p11101", "d11104", "pglabgro", "pgvebzeit", "e11101", "pgemplst", "hghinc"))
+test2 <- data_full %>% select(c("p11101", "d11104", "pglabgro", "pgvebzeit", "e11101", "pgemplst", "hghinc"))
+compare_happy <- compare(test1, test2, utility.stats = c("pMSE", "S_pMSE", "SPECKS"))
+utility_happy <- utility.gen(test1, test2)
+compare_happy$plots[[1]]
+compare_happy$plots[[2]]
+compare_happy$tab.utility
+print(utility_happy, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+# Global Utility specific for variables for health satisfaction analysis
+test1 <- synth_data_full$syn %>% select(c("m11125", "d11101", "d11104", "m11127", "m11102"))
+test2 <- data_full %>% select(c("m11125", "d11101", "d11104", "m11127", "m11102"))
+compare_health <- compare(test1, test2, utility.stats = c("pMSE", "S_pMSE", "SPECKS"))
+utility_health <- utility.gen(test1, test2)
+compare_health$plots[[1]]
+compare_health$plots[[2]]
+compare_health$tab.utility
+print(utility_health, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+# Global Utility specific for variables for household income analysis
+test1 <- synth_data_full$syn %>% select(c("hghinc", "d11104", "d11109", "d11102ll"))
+test2 <- data_full %>% select(c("hghinc", "d11104", "d11109", "d11102ll"))
+compare_household <- compare(test1, test2, utility.stats = c("pMSE", "S_pMSE", "SPECKS"))
+utility_household <- utility.gen(test1, test2)
+compare_household$plots
+compare_household$tab.utility
+print(utility_household, print.stats = c("pMSE", "S_pMSE", "SPECKS"))
+toc()
+```
+
+``` {r Multiple Imputation of data sets}
+# Take Methods and predictor matrix from synthpop step above
+meth <- synth_data_full$method
+# remove collinear methods for collinear variables
+meth <- str_remove_all(meth, pattern = "collinear")
+pred <- synth_data_full$predictor.matrix
+# include models into prediction matrix, which will be analyzed later
+# Happiness/Life satisfaction
+pred["p11101", ] <- 0
+pred["p11101", c("d11104", "pglabgro", "pgvebzeit", "e11101", "pgemplst", "hghinc")] <- 1
+# Health
+pred["m11125", ] <- 0
+pred["m11125", c("d11101", "d11104", "m11127", "m11102")] <- 1
+# Household Income
+pred["hghinc", ] <- 0
+pred["hghinc", c("d11104", "d11109", "d11102ll")] <- 1
+
+#### BEWARE: The following three mice imputation functions take a long while to compile
+# for original data
+tic()
+imputed_data <- mice(data_full, method = meth, predictorMatrix = pred, seed = 123, 
+maxit = 10, m = 5)
+
+# for synthetic data, if first synthesized then merged
+test <- syn(synth_data, m=0)
+imputed_data_syn <- mice(synth_data, method = test$method, predictorMatrix = pred, seed = 123, 
+maxit = 10, m = 5)
+
+# for synthetic data, if first merged then synthesized
+imputed_data_full_syn <- mice(synth_data_full$syn, method = meth, predictorMatrix = pred, seed = 123, 
+maxit = 10, m = 5)
+toc()
+```
+
+``` {r confidence interval function}
+# Function to calculate the Confidence Interval Overlap using the confidence invervals returned by the regression models.
+# Idea of this approach taken from compare.CI function at bottom of website:
+# https://rdrr.io/cran/synthpop/src/R/compare.syn.r#sym-compare.fit.synds
+# Input: 
+#   confint_orig: confidence interval of the regression analysis on the original dataset as a two column dataframe
+#   confint_orig: confidence interval of the regression analysis on the synthetic dataset as a two column dataframe
+# Output: A one column dataframe containing the confidence interval overlaps for each predictor of the analysi
+
+CI.Overlap <- function(confint_orig, confint_syn) {
+  #since both models take in same variables, contint_orig and confint_syn have same dimension
+  CIoverlap <- matrix(NA, nrow = nrow(confint_orig), ncol = 1, dimnames = list(rownames(confint_orig), "CI overlap"))
+  ##Calculate CIoverlap
+  for(i in seq_len(nrow(confint_orig))) {  
+    ## CI overlap
+    overlap.lower <- max(confint_orig[i, 1], confint_syn[i, 1])       
+    overlap.upper <- min(confint_orig[i, 2], confint_syn[i, 2])       
+    
+    CIoverlap[i, 1] <- 0.5 * 
+      (((overlap.upper - overlap.lower) / (confint_orig[i, 2] - confint_orig[i, 1])) + 
+         ((overlap.upper - overlap.lower) / (confint_syn[i, 2] - confint_syn[i, 1])))
+    
+    }
+  return(as.data.frame(CIoverlap))
+}
+```
+
+```{r analyses on the imputed original and synthetic datasets for Life Satisfaction}
+# # LIFE SATISFACTION (happyness scale from 0 - 10)
+# overall life satisfaction pequiv$p11101
+# marital status pequiv$d11104 or also pgen$pgfamstd
+# current gross labor income in euro pgen$pglabgro
+# agreed upon time at work pgen$pgvebzeit
+# annual workhours of individual pequiv$e11101
+# employment status pgen$pgemplst(non-binary) or pequiv$e11102(binary)
+# monthly household net income in euro hgen$hghinc
+
+# original dataset
+fit <- with(imputed_data, expr = lm(p11101 ~ as.factor(d11104) + pglabgro + pgvebzeit + e11101 + as.factor(pgemplst) + hghinc))
+pool <- pool(fit)
+summary_pool <- summary(pool, conf.int = TRUE)
+
+# synthetic dataset (first synthesized then merged)
+fit_syn <- with(imputed_data_syn, expr = lm(p11101 ~ as.factor(d11104) + pglabgro + pgvebzeit + e11101 + as.factor(pgemplst) + hghinc))
+pool_syn <- pool(fit_syn)
+summary_pool_syn <- summary(pool_syn, conf.int = TRUE)
+
+# synthetic dataset (first merged then synthesized)
+fit_syn_full <- with(imputed_data_full_syn, expr = lm(p11101 ~ as.factor(d11104) + pglabgro + pgvebzeit + e11101 + as.factor(pgemplst) + hghinc))
+pool_syn_full <- pool(fit_syn_full)
+summary_pool_syn_full <- summary(pool_syn_full, conf.int = TRUE)
+
+# for CI Overlap
+confint_orig <- summary_pool[c(7,8)]
+rownames(confint_orig) <- as.character(summary_pool[[1]])
+
+confint_syn <- summary_pool_syn[c(7,8)]
+rownames(confint_syn) <- as.character(summary_pool_syn[[1]])
+
+confint_syn_full <- summary_pool_syn_full[c(7,8)]
+rownames(confint_syn_full) <- as.character(summary_pool_syn_full[[1]])
+
+# results of model and Confidence Overlap
+summary_pool #original
+summary_pool_syn #syn first synthesized
+summary_pool_syn_full #syn first merged
+CI.Overlap(confint_orig = confint_orig, confint_syn = confint_syn) #CIoverlap of original and synthetic(first synthesized)
+CI.Overlap(confint_orig = confint_orig, confint_syn = confint_syn_full) #CIoverlap of original and synthetic(first merged)
+```
+
+``` {r analyses on the imputed original and synthetic datasets for health}
+# # HEALTH (Satisfaction with health on scale from 0 - 10)
+# m11125: Satisfaction with Health
+# d11101: Age of Individual
+# d11104: Marital Status of Individual
+# m11127: Number of annual doctor visits
+# m11102: Inpatient nights in hosp
+
+# original dataset
+fit <- with(imputed_data, expr = lm(m11125 ~ d11101 + as.factor(d11104) + m11127 + m11102))
+pool <- pool(fit)
+summary_pool <- summary(pool, conf.int = TRUE)
+
+# synthetic dataset (first synthesized then merged)
+fit_syn <- with(imputed_data_syn, expr =lm(m11125 ~ d11101 + as.factor(d11104) + m11127 + m11102))
+pool_syn <- pool(fit_syn)
+summary_pool_syn <- summary(pool_syn, conf.int = TRUE)
+
+# synthetic dataset (first merged then synthesized)
+fit_syn_full <- with(imputed_data_full_syn, expr = lm((m11125 ~ d11101 + as.factor(d11104) + m11127 + m11102)))
+pool_syn_full <- pool(fit_syn_full)
+summary_pool_syn_full <- summary(pool_syn_full, conf.int = TRUE)
+
+# for CI Overlap
+confint_orig <- summary_pool[c(7,8)]
+rownames(confint_orig) <- as.character(summary_pool[[1]])
+
+confint_syn <- summary_pool_syn[c(7,8)]
+rownames(confint_syn) <- as.character(summary_pool_syn[[1]])
+
+confint_syn_full <- summary_pool_syn_full[c(7,8)]
+rownames(confint_syn_full) <- as.character(summary_pool_syn_full[[1]])
+
+# results of model and Confidence Overlap
+summary_pool #original
+summary_pool_syn #syn first synthesized
+summary_pool_syn_full #syn first merged
+CI.Overlap(confint_orig = confint_orig, confint_syn = confint_syn) #CIoverlap of original and synthetic(first synthesized)
+CI.Overlap(confint_orig = confint_orig, confint_syn = confint_syn_full) #CIoverlap of original and synthetic(first merged)
+```
+
+``` {r analyses on the imputed original and synthetic datasets for household income}
+# # HOUSEHOLD INCOME
+# hghinc: Monthly Household Net Income (EUR)
+# d11104: Marital Status of Individual
+# d11109: Number of Years of Education
+# d11102ll: Gender of Individual
+
+# original dataset
+fit <- with(imputed_data, expr = lm(hghinc ~ as.factor(d11104) + d11109 + as.factor(d11102ll)))
+pool <- pool(fit)
+summary_pool <- summary(pool, conf.int = TRUE)
+
+# synthetic dataset (first synthesized then merged)
+fit_syn <- with(imputed_data_syn, expr = lm(hghinc ~ as.factor(d11104) + d11109 + as.factor(d11102ll)))
+pool_syn <- pool(fit_syn)
+summary_pool_syn <- summary(pool_syn, conf.int = TRUE)
+
+# synthetic dataset (first merged then synthesized)
+fit_syn_full <- with(imputed_data_full_syn, expr = lm(hghinc ~ as.factor(d11104) + d11109 + as.factor(d11102ll)))
+pool_syn_full <- pool(fit_syn_full)
+summary_pool_syn_full <- summary(pool_syn_full, conf.int = TRUE)
+
+# for CI Overlap
+confint_orig <- summary_pool[c(7,8)]
+rownames(confint_orig) <- as.character(summary_pool[[1]])
+
+confint_syn <- summary_pool_syn[c(7,8)]
+rownames(confint_syn) <- as.character(summary_pool_syn[[1]])
+
+confint_syn_full <- summary_pool_syn_full[c(7,8)]
+rownames(confint_syn_full) <- as.character(summary_pool_syn_full[[1]])
+
+# results of model and Confidence Overlap
+summary_pool #original
+summary_pool_syn #syn first synthesized
+summary_pool_syn_full #syn first merged
+CI.Overlap(confint_orig = confint_orig, confint_syn = confint_syn) #CIoverlap of original and synthetic(first synthesized)
+CI.Overlap(confint_orig = confint_orig, confint_syn = confint_syn_full) #CIoverlap of original and synthetic(first merged)
+```
+
+
+``` {r risk assessment fully synthetic data}
+# check if there are duplicates from the original into the synthetic dataset
+#pgen
+intersect(pgen, synth_pgen$syn) #0
+#hgen
+intersect(hgen, synth_hgen$syn) #0
+#pequiv
+intersect(pequiv, synth_pequiv$syn) #0
+#full data
+intersect(data_full, synth_data_full$syn) #0
+
+#### examine via l-diversity
+
+# Function to bundle steps taken by me to get the k-anonymity l-diversity by first creating object of class sdcMicroObj.
+# Input:
+#   data: dataframe containing the microdataset, which shall be analyzed
+#   selected_keyVars: character vector containing names of chategorical key variables
+#   selected_numVars: character vector containing names of numeric key variables
+#   selected_sensibleVars: character vector containing names of sensible variables for l-diversity
+#   weight: character scalar containing sampling weights
+# Output:
+#   prints outputs for k-anonymity, l-diversity measures and the first few rows of the l-diversity output
+getLDiversity <- function(data, selected_keyVars, selected_numVars, selected_sensibleVars = NULL, weight = NULL) {
+  data_sdc <- data
+  data_sdc[, selected_keyVars] <- lapply(data_sdc[, selected_keyVars], factor) #categorical variables to factor
+  data_sdc <- data_sdc[, c(selected_keyVars, selected_numVars, selected_sensibleVars)] #subset
+  SdcObj_data <- createSdcObj(data_sdc, keyVars = selected_keyVars, numVars = selected_numVars, 
+                              sensibleVar = selected_sensibleVars)
+  if (!is.null(selected_sensibleVars)) {
+    SdcObj_data <- ldiversity(SdcObj_data) 
+    print(SdcObj_data)# k-anonymity for 2, 3 and 5 anonymity
+    print(SdcObj_data@risk$ldiversity) #l-diversity measures ( Min., 1st Qu., Median, Mean 3rd Qu., Max.)
+    head(SdcObj_data@risk$ldiversity) 
+  #Distinct_Ldiversity, Entropy_Ldiversity, Recursive_Ldiversity, MultiEntropy_Ldiversity, MultiRecursive_Ldiversity
+  } else {
+    print(SdcObj_data)# k-anonymity for 2, 3 and 5 anonymity
+  }
+}
+
+#pgen original and synthetic
+selected_keyVars1 <- c("pgfamstd", "pgstib", "pgemplst", "pgjobch", "pgnace", "pgisco88", "pgkldb92", "pgausb", "pgpsbil")
+selected_numVars1 <- c("pglabnet", "pgerwzeit", "pguebstd", "pgbilzeit")
+selected_sensibleVars1 <- c("pgnation")
+
+getLDiversity(data = pgen, selected_keyVars = selected_keyVars1, selected_numVars = selected_numVars1, 
+              selected_sensibleVars = selected_sensibleVars1)
+
+getLDiversity(data = synth_pgen$syn, selected_keyVars = selected_keyVars1, selected_numVars = selected_numVars1, 
+              selected_sensibleVars = selected_sensibleVars1)
+
+#hgen original and synthetic
+selected_keyVars2 <- c("hgacquis", "hgowner")
+selected_numVars2 <- c("hgmoveyr", "hgrent", "hgsize")
+selected_sensibleVars2 <- c("hghinc")
+
+getLDiversity(data = hgen, selected_keyVars = selected_keyVars2, selected_numVars = selected_numVars2,
+              selected_sensibleVars = selected_sensibleVars2)
+
+getLDiversity(data = synth_hgen$syn, selected_keyVars = selected_keyVars2, selected_numVars = selected_numVars2,
+              selected_sensibleVars = selected_sensibleVars2)
+
+#pequiv original and synthetic
+selected_keyVars3 <- c("d11102ll", "d11104", "e11105_v1", "l11101")
+selected_numVars3 <- c("d11101", "d11106", "d11107", "d11109", "e11101", "adchb", "alg2", "asyl", "chspt", "divdy", "i11105", "i11109")
+selected_sensibleVars3 <- c("m11102", "m11124", "i11101")
+weight3 <- "w11105"
+
+getLDiversity(data = pequiv, selected_keyVars = selected_keyVars3, selected_numVars = selected_numVars3, 
+              selected_sensibleVars = selected_sensibleVars3, weight = weight3)
+
+getLDiversity(data = synth_pequiv$syn, selected_keyVars = selected_keyVars3, selected_numVars = selected_numVars3, 
+              selected_sensibleVars = selected_sensibleVars3, weight = weight3)
+
+#full data original and it's synthetic data equivalent
+selected_keyVars_full <- c(selected_keyVars1, selected_keyVars2, selected_keyVars3)
+selected_numVars_full <- c(selected_numVars1, selected_numVars2, selected_numVars3)
+selected_sensibleVars_full <- c(selected_sensibleVars1, selected_sensibleVars2, selected_sensibleVars3)
+weight <- weight3
+
+getLDiversity(data = data_full, selected_keyVars = selected_keyVars_full, selected_numVars = selected_numVars_full, 
+              selected_sensibleVars = selected_sensibleVars_full, weight = weight)
+
+#synthetic first merged then synthesized
+getLDiversity(data = synth_data_full$syn, selected_keyVars = selected_keyVars_full, 
+              selected_numVars = selected_numVars_full, selected_sensibleVars = selected_sensibleVars_full, 
+              weight = weight)
+
+#synthetic first synthesized then merged
+getLDiversity(data = synth_data, selected_keyVars = selected_keyVars_full, 
+              selected_numVars = selected_numVars_full, selected_sensibleVars = selected_sensibleVars_full, 
+              weight = weight)
+```
+
+``` {r sessioninfo}
+sessionInfo()
+```
